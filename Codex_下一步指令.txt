@@ -1,0 +1,1 @@
+请在我的PWA项目中导入所附questions_import_ready.json和两份knowledge_*.md。先实现章节练习、答案解析、错题本、IndexedDB本地存储、离线PWA及JSON备份。题库中的originalChapter是旧版章节号，绝不能标记为已核验的2026考纲章节；verificationStatus显示“待核验”。caseContext作为案例背景材料展示。保持题目sourceFile和sourceLine以便追溯。若字段格式有异常，提供清晰的导入错误报告，不要自行猜答案。
