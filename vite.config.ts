@@ -9,10 +9,10 @@ export default defineConfig({
       registerType: "prompt",
       includeAssets: ["icon.svg", "icon-192.png", "icon-512.png"],
       manifest: {
-        name: "拾知 · 工商管理离线刷题",
-        short_name: "拾知刷题",
+        name: "拾知 · 工商管理离线学习",
+        short_name: "拾知学习",
         lang: "zh-CN",
-        description: "工商管理题库，待人工核验",
+        description: "工商管理结构化学习与离线练习，待人工核验",
         start_url: "./",
         scope: "./",
         display: "standalone",
