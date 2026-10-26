@@ -1,5 +1,7 @@
 import { openDB } from "idb";
 import { questionMap, sameAnswer } from "./data";
+import { isValidCursor } from "./practice";
+import { validateLessonRecords, type LessonRecord } from "./course";
 export interface AnswerRecord {
   selected: string[];
   correct: boolean;
@@ -7,6 +9,7 @@ export interface AnswerRecord {
   updatedAt: string;
 }
 export interface StudyState {
+  lessons?: Record<string, LessonRecord>;
   records: Record<string, AnswerRecord>;
   cursors: Record<string, string>;
   notes: Record<string, string>;
@@ -124,11 +127,7 @@ export function parseBackup(text: string): StudyState {
   }
   for (const [key, id] of Object.entries(s.cursors)) {
     const q = typeof id === "string" ? questionMap.get(id) : undefined;
-    if (
-      !q ||
-      !/^chapter:(?:[1-9]|10|11)$/.test(key) ||
-      key !== `chapter:${q.originalChapter}`
-    )
+    if (!q || !isValidCursor(key, id as string))
       errors.push(`进度 ${key}：章节或题目 ID 无效`);
     else result.cursors[key] = id as string;
   }
@@ -136,6 +135,13 @@ export function parseBackup(text: string): StudyState {
     if (!questionMap.has(id) || typeof note !== "string" || note.length > 2000)
       errors.push(`纠错记录 ${id}：未知题目或文本超过 2000 字`);
     else result.notes[id] = note;
+  }
+  if (s.lessons !== undefined) {
+    try {
+      result.lessons = validateLessonRecords(s.lessons);
+    } catch (e) {
+      errors.push((e as Error).message);
+    }
   }
   if (errors.length)
     throw new Error(

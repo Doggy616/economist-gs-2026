@@ -1,10 +1,28 @@
 import { useEffect, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { useRegisterSW } from "virtual:pwa-register/react";
-import yao from "../knowledge_yao.md?raw";
-import creator from "../knowledge_skill_creator.md?raw";
-import { chapterNames, displayText, questionMap, questions } from "./data";
+import { chapterNames, questionMap, questions } from "./data";
+import Markdown from "./Markdown";
+import { LearnHome, GuidedLesson } from "./GuidedLearning";
+import {
+  newLesson,
+  resetLesson,
+  lessonQuestions,
+  type LessonRecord,
+} from "./course";
+import QuestionLibrary, { type LibraryFilters } from "./QuestionLibrary";
+import {
+  KnowledgeHub,
+  TopicDetail,
+  questionOrigin,
+  type KnowledgeFilters,
+} from "./LearningViews";
+import { topics, topicMap, questionTopic, topicStats } from "./learning";
+import {
+  selectQuestions,
+  sessionKey,
+  sessionTitle,
+  type PracticeSession,
+} from "./practice";
 import {
   emptyState,
   exportBackup,
@@ -14,25 +32,16 @@ import {
   saveState,
   type StudyState,
 } from "./storage";
-type Tab = "home" | "wrong" | "knowledge" | "settings";
+type Tab = "learn" | "home" | "wrong" | "knowledge" | "settings";
 type InstallEvent = Event & {
   prompt(): Promise<void>;
   userChoice: Promise<{ outcome: string }>;
 };
-function Markdown({ text }: { text: string }) {
-  return (
-    <div className="markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-        {displayText(text)}
-      </ReactMarkdown>
-    </div>
-  );
-}
 export default function App() {
   const [state, setState] = useState<StudyState>(emptyState);
   const [loaded, setLoaded] = useState(false);
   const [fatal, setFatal] = useState("");
-  const [tab, setTab] = useState<Tab>("home");
+  const [tab, setTab] = useState<Tab>("learn");
   const [queue, setQueue] = useState<string[]>([]);
   const [position, setPosition] = useState(0);
   const [mode, setMode] = useState("");
@@ -41,7 +50,22 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [note, setNote] = useState("");
-  const [doc, setDoc] = useState<"yao" | "creator">("yao");
+  const [lessonTopic, setLessonTopic] = useState<string | null>(null);
+  const [courseOrigin, setCourseOrigin] = useState<string | null>(null);
+  const [focusedTopic, setFocusedTopic] = useState<string | null>(null);
+  const [originTopic, setOriginTopic] = useState<string | null>(null);
+  const [practiceTitle, setPracticeTitle] = useState("");
+  const [libraryFilters, setLibraryFilters] = useState<LibraryFilters>({
+    source: "chapter",
+    type: "all",
+    chapter: 0,
+    year: 0,
+  });
+  const [knowledgeFilters, setKnowledgeFilters] = useState<KnowledgeFilters>({
+    chapter: 1,
+    search: "",
+    weak: false,
+  });
   const [install, setInstall] = useState<InstallEvent | null>(null);
   const [online, setOnline] = useState(navigator.onLine);
   const [pending, setPending] = useState<StudyState | null>(null);
@@ -110,25 +134,75 @@ export default function App() {
       setBusy(false);
     }
   }
-  async function openChapter(chapter: number) {
-    const ids = questions
-      .filter((q) => q.originalChapter === chapter)
-      .map((q) => q.id);
-    const key = `chapter:${chapter}`;
-    const saved = state.cursors[key];
-    const pos = Math.max(0, ids.indexOf(saved));
+  async function openGuided(id: string, review = false) {
+    const saved = state.lessons?.[id];
+    const record =
+      saved?.phase === 5 || review
+        ? resetLesson(saved, true)
+        : (saved ?? newLesson());
     if (
-      await persist({
+      !topicMap.has(id) ||
+      !(await persist({
+        ...state,
+        lessons: { ...state.lessons, [id]: record },
+      }))
+    )
+      return;
+    setLessonTopic(id);
+    setFocusedTopic(null);
+    window.scrollTo(0, 0);
+  }
+  async function saveLesson(id: string, record: LessonRecord) {
+    return persist({ ...state, lessons: { ...state.lessons, [id]: record } });
+  }
+  async function openPractice(
+    session: PracticeSession,
+    startId?: string,
+    wrongOnly = false,
+  ) {
+    const list = selectQuestions(session).filter(
+      (q) => !wrongOnly || state.records[q.id]?.correct === false,
+    );
+    const ids = list.map((q) => q.id);
+    if (!ids.length) {
+      setMessage("当前范围没有可练题目，请调整筛选。");
+      return;
+    }
+    const key = sessionKey(session);
+    const legacy =
+      session.kind === "chapter"
+        ? state.cursors[`chapter:${session.chapter}`]
+        : undefined;
+    const saved = startId ?? state.cursors[key] ?? legacy;
+    const pos = Math.max(0, ids.indexOf(saved ?? ""));
+    if (
+      !wrongOnly &&
+      !(await persist({
         ...state,
         cursors: { ...state.cursors, [key]: ids[pos] },
-      })
-    ) {
-      setQueue(ids);
-      setPosition(pos);
-      setMode(key);
-      setSelected([]);
-      setRevealed(false);
-    }
+      }))
+    )
+      return;
+    setQueue(ids);
+    setPosition(pos);
+    setMode(wrongOnly ? "wrong-topic" : key);
+    setPracticeTitle(
+      `${wrongOnly ? "错题回练 · " : ""}${sessionTitle(session)}`,
+    );
+    setOriginTopic(session.kind === "topic" ? session.topic : null);
+    setCourseOrigin(session.kind === "lesson" ? session.topic : null);
+    setLessonTopic(null);
+    setFocusedTopic(null);
+    setSelected([]);
+    setRevealed(false);
+    setMessage("");
+  }
+  function finishPractice() {
+    setQueue([]);
+    setLessonTopic(courseOrigin);
+    setCourseOrigin(null);
+    setFocusedTopic(originTopic);
+    setOriginTopic(null);
   }
   function openWrong(id?: string) {
     const ids = questions
@@ -137,6 +211,11 @@ export default function App() {
     setQueue(ids);
     setPosition(Math.max(0, ids.indexOf(id ?? "")));
     setMode("wrong");
+    setLessonTopic(null);
+    setCourseOrigin(null);
+    setPracticeTitle("错题回练");
+    setOriginTopic(null);
+    setFocusedTopic(null);
     setSelected([]);
     setRevealed(false);
   }
@@ -144,7 +223,7 @@ export default function App() {
     const pos = position + delta;
     if (pos < 0 || pos >= queue.length) return;
     if (
-      mode.startsWith("chapter:") &&
+      (mode.startsWith("study:") || mode.startsWith("chapter:")) &&
       !(await persist({
         ...state,
         cursors: { ...state.cursors, [mode]: queue[pos] },
@@ -163,6 +242,10 @@ export default function App() {
   const percent = Math.round((records.length / questions.length) * 100);
   function navigate(next: Tab) {
     setQueue([]);
+    setLessonTopic(null);
+    setCourseOrigin(null);
+    setFocusedTopic(null);
+    setOriginTopic(null);
     setTab(next);
     setMessage("");
     window.scrollTo(0, 0);
@@ -231,26 +314,72 @@ export default function App() {
             </button>
           </div>
         )}
-        {q ? (
+        {lessonTopic && topicMap.has(lessonTopic) ? (
+          <GuidedLesson
+            key={lessonTopic}
+            topic={topicMap.get(lessonTopic)!}
+            state={state}
+            busy={busy}
+            onSave={(record) => saveLesson(lessonTopic, record)}
+            onExit={() => navigate("learn")}
+            onNext={(id) => void openGuided(id)}
+            onPractice={(id) => {
+              const r = state.lessons?.[id];
+              const first = lessonQuestions(id).find(
+                (q) =>
+                  !state.records[q.id] ||
+                  !r?.recalledAt ||
+                  Date.parse(state.records[q.id].updatedAt) <
+                    Date.parse(r.recalledAt),
+              );
+              void openPractice({ kind: "lesson", topic: id }, first?.id);
+            }}
+          />
+        ) : focusedTopic && topicMap.has(focusedTopic) ? (
+          <TopicDetail
+            key={focusedTopic}
+            topic={topicMap.get(focusedTopic)!}
+            state={state}
+            busy={busy}
+            onGuided={() => void openGuided(focusedTopic)}
+            onBack={() => setFocusedTopic(null)}
+            onPractice={(...args) => void openPractice(...args)}
+          />
+        ) : q ? (
           <>
             <div className="practice-top">
               <button
                 className="text-button"
                 disabled={busy}
-                onClick={() => setQueue([])}
+                onClick={finishPractice}
               >
-                ← 返回{mode === "wrong" ? "错题本" : "章节"}
+                ← 返回
+                {courseOrigin
+                  ? "引导学习"
+                  : originTopic
+                    ? "知识专题"
+                    : mode === "wrong"
+                      ? "错题本"
+                      : "题库"}
               </button>
               <span>
                 {position + 1} / {queue.length}
               </span>
             </div>
+            <p className="muted practice-title">{practiceTitle}</p>
+            <p className="question-origin">
+              {questionOrigin(q)} · {q.sourceFile} 第 {q.sourceLine} 行
+            </p>
             <div className="progress-track">
               <i
                 style={{ width: `${((position + 1) / queue.length) * 100}%` }}
               />
             </div>
-            <section className="question card" key={q.id}>
+            <section
+              className="question card"
+              key={q.id}
+              data-question-id={q.id}
+            >
               <div className="eyebrow">
                 <span>
                   旧版第 {q.originalChapter} 章 ·{" "}
@@ -350,6 +479,33 @@ export default function App() {
                   {state.records[q.id].correct ? "答对" : "答错"}，可再次练习
                 </p>
               )}
+              <section className="knowledge-bridge">
+                <h2>
+                  {revealed && !state.records[q.id]?.correct
+                    ? "先补知识，再练同类题"
+                    : "这道题对应的知识"}
+                </h2>
+                {questionTopic.get(q.id) ? (
+                  <>
+                    <p>原题考点：{q.knowledgePoint}</p>
+                    <button
+                      onClick={() =>
+                        setFocusedTopic(questionTopic.get(q.id)!.id)
+                      }
+                    >
+                      学习专题 · {questionTopic.get(q.id)!.title} →
+                    </button>
+                    <p className="muted">
+                      按原题标签关联，待核验。返回后保留本题作答状态。
+                    </p>
+                  </>
+                ) : (
+                  <p>
+                    原题考点：{q.knowledgePoint || "未标注"}
+                    。目前没有可靠的专题匹配，暂列待细分；原题仍可正常练习。
+                  </p>
+                )}
+              </section>
               <details className="source">
                 <summary>原题来源与纠错备注</summary>
                 <p>
@@ -410,7 +566,7 @@ export default function App() {
                 <button
                   className="primary"
                   disabled={busy}
-                  onClick={() => setQueue([])}
+                  onClick={finishPractice}
                 >
                   完成本轮
                 </button>
@@ -419,6 +575,12 @@ export default function App() {
           </>
         ) : (
           <>
+            {tab === "learn" && (
+              <LearnHome
+                state={state}
+                onOpen={(id, review) => void openGuided(id, review)}
+              />
+            )}
             {tab === "home" && (
               <>
                 <section className="hero">
@@ -457,50 +619,14 @@ export default function App() {
                     <span>待复习错题 ↗</span>
                   </button>
                 </div>
-                <div className="section-heading">
-                  <h2>按章节练习</h2>
-                  <span>11 个旧版章节</span>
-                </div>
-                <p className="chapter-warning">
-                  资料待核验 · 以下为旧版章节，尚未适配 2026 年考纲。
-                </p>
-                <div className="chapters">
-                  {chapterNames.map((name, i) => {
-                    const list = questions.filter(
-                      (q) => q.originalChapter === i + 1,
-                    );
-                    const done = list.filter((q) => state.records[q.id]).length;
-                    return (
-                      <button
-                        className="chapter card"
-                        key={name}
-                        disabled={busy}
-                        onClick={() => void openChapter(i + 1)}
-                      >
-                        <span className="chapter-number">
-                          {String(i + 1).padStart(2, "0")}
-                        </span>
-                        <span className="chapter-content">
-                          <strong>{name}</strong>
-                          <span>
-                            {done} / {list.length} 题 ·{" "}
-                            {state.cursors[`chapter:${i + 1}`]
-                              ? "继续练习"
-                              : "开始练习"}
-                          </span>
-                          <span className="mini-track">
-                            <i
-                              style={{
-                                width: `${(done / list.length) * 100}%`,
-                              }}
-                            />
-                          </span>
-                        </span>
-                        <span className="arrow">↗</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                <QuestionLibrary
+                  filters={libraryFilters}
+                  onFilters={setLibraryFilters}
+                  state={state}
+                  busy={busy}
+                  onPractice={(...args) => void openPractice(...args)}
+                  onTopic={setFocusedTopic}
+                />
                 <p className="footnote">
                   一点一滴，学有所获。进度自动保存在当前设备。
                 </p>
@@ -513,6 +639,34 @@ export default function App() {
                   <h1>把错题，变成收获。</h1>
                   <p>按最近一次作答收录；重新答对后自动移出，练习次数保留。</p>
                 </div>
+                {wrong.length > 0 && (
+                  <section className="card weakness-panel">
+                    <h2>先找到薄弱专题</h2>
+                    <p className="muted">
+                      按最近一次作答统计，不代表完整掌握情况；先回看知识，再练同类题。
+                    </p>
+                    <div className="weakness-links">
+                      {topics
+                        .filter(
+                          (t) => topicStats(t.id, state.records).wrong > 0,
+                        )
+                        .sort(
+                          (a, b) =>
+                            topicStats(b.id, state.records).wrong -
+                            topicStats(a.id, state.records).wrong,
+                        )
+                        .map((t) => (
+                          <button
+                            key={t.id}
+                            onClick={() => setFocusedTopic(t.id)}
+                          >
+                            {t.title} · {topicStats(t.id, state.records).wrong}{" "}
+                            道错题 →
+                          </button>
+                        ))}
+                    </div>
+                  </section>
+                )}
                 {wrong.length ? (
                   <>
                     <button className="primary" onClick={() => openWrong()}>
@@ -546,37 +700,12 @@ export default function App() {
               </>
             )}
             {tab === "knowledge" && (
-              <>
-                <div className="page-heading">
-                  <span className="eyebrow">YOUR STUDY COMPANION</span>
-                  <h1>先搭骨架，再记细节。</h1>
-                  <p>两份原始学习资料，仅作参考，内容与考纲适配均待核验。</p>
-                </div>
-                <div className="segmented">
-                  <button
-                    aria-pressed={doc === "yao"}
-                    onClick={() => setDoc("yao")}
-                  >
-                    完整知识骨架
-                  </button>
-                  <button
-                    aria-pressed={doc === "creator"}
-                    onClick={() => setDoc("creator")}
-                  >
-                    体系与学习心法
-                  </button>
-                </div>
-                <article className="card knowledge">
-                  <p className="muted">
-                    来源：
-                    {doc === "yao"
-                      ? "knowledge_yao.md"
-                      : "knowledge_skill_creator.md"}{" "}
-                    · 原文保留
-                  </p>
-                  <Markdown text={doc === "yao" ? yao : creator} />
-                </article>
-              </>
+              <KnowledgeHub
+                filters={knowledgeFilters}
+                onFilters={setKnowledgeFilters}
+                state={state}
+                onOpen={setFocusedTopic}
+              />
             )}
             {tab === "settings" && (
               <>
@@ -588,7 +717,7 @@ export default function App() {
                 <section className="card settings">
                   <h2>备份与恢复</h2>
                   <p>
-                    导出包含答题记录、章节位置和纠错备注，不包含题库原文。清除浏览器数据或更换网址、设备后，需要手动恢复备份。
+                    导出包含答题记录、练习位置、引导学习步骤、回忆文本、复习安排和纠错备注，不包含题库原文。清除浏览器数据或更换网址、设备后，需要手动恢复备份。
                   </p>
                   <button className="primary" onClick={download}>
                     导出 JSON 备份
@@ -673,7 +802,7 @@ export default function App() {
                   <p>
                     静态部署后题库通常可被网址访问者获取，公开部署前请确认资料使用权限。当前无账号、云同步或分析服务。
                   </p>
-                  <p className="muted">拾知 v1.0 · React + IndexedDB</p>
+                  <p className="muted">拾知 v1.1 · 知识与试题联动</p>
                 </section>
               </>
             )}
@@ -683,7 +812,8 @@ export default function App() {
       <nav className="bottom-nav" aria-label="主导航">
         {(
           [
-            ["home", "▦", "章节"],
+            ["learn", "⌂", "学习"],
+            ["home", "▦", "题库"],
             ["wrong", "↺", "错题本"],
             ["knowledge", "▤", "知识手册"],
             ["settings", "⚙", "我的"],
